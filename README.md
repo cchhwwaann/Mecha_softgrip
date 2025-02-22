@@ -4,5 +4,4 @@ conda env create -f OpenCV.yaml
 conda activate OpenCV
 
 ---------------------------------------------
-anaconda로 저 명령어 입력해서 똑같은 가상환경 만들어서 해야할겨
-아마 오픈씨브이가 파이썬 최신버전에서 안돼서 3.8인가로 낮춰서 받고 판다스랑 이것저것 받았어가지고!
+2.22 modified_aduino_format.py
