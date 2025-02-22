@@ -130,7 +130,8 @@ stable_count_right = [0] * 5
 # ==============================
 # 메인 루프
 # ==============================
-cap = cv2.VideoCapture(1)
+
+cap = cv2.VideoCapture(2)
 
 while True:
     ret, frame = cap.read()
@@ -317,3 +318,7 @@ while True:
 
 cap.release()
 cv2.destroyAllWindows()
+
+# --> 첫 외형 픽스 해야함 ( 나중에 리버스 넣을때 외형선 이슈생길수도있으니까 나머지 그립부분이 붙으면 외형선 못 땀)
+# -->모터가 다 움직였다 판단하는 시점은 done으로 받는다.(serial통신신)
+# --> done신호받되, 실시간으로보는건 유지하면서 너무 과하게 움직이면 stop할수있도록록
