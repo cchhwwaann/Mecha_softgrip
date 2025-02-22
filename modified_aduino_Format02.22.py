@@ -13,6 +13,9 @@ except Exception as e:
     print("Serial connection failed, using keyboard input for done signals.")
     ser = None
 
+# 전역 변수: 아두이노에서 0 신호를 수신하면 모든 모터를 정지하도록 하는 플래그
+global_stop = False
+
 # ======================
 # Helper functions
 # ======================
@@ -140,10 +143,9 @@ while True:
     if ser is not None and ser.in_waiting:
         line = ser.readline().decode().strip()
         if line == "0":
-            for i in range(5):
-                motor_done_left[i] = True
-                motor_done_right[i] = True
-            print("Received global done signal via serial (0)")
+            # 아두이노에서 "0" 신호를 받으면 전역적으로 모든 모터를 정지시킴
+            global_stop = True
+            print("Received global stop signal via serial (0)")
     # ------------------------------------
 
     # 외형선 검출
@@ -228,7 +230,6 @@ while True:
         updated = False  # 이번 프레임 업데이트 여부
 
         for idx, line_temp in enumerate(horizontal_lines):
-            # 캘리브레이션 후엔 고정된 교점 사용, 아니면 임시 교점 사용
             if calibrated:
                 left_int = fixed_intersections_left[idx]
                 right_int = fixed_intersections_right[idx]
@@ -250,7 +251,7 @@ while True:
                 left_angle_data[idx].append(measured_left_angle)
                 right_angle_data[idx].append(measured_right_angle)
             else:
-                # 먼저 실시간으로 범위 내이면 바로 STOP (즉, 90° ~ 110°)
+                # 먼저, 실시간 측정 각도가 90°~110° 범위이면 바로 STOP
                 if TARGET_ANGLE - TOLERANCE <= measured_left_angle <= TARGET_ANGLE + TOLERANCE:
                     current_command_left[idx] = "STOP"
                     error_left_arr[idx] = 0
@@ -285,9 +286,18 @@ while True:
             cv2.circle(frame_display, tuple(left_int), 5, (0,0,255), -1)
             cv2.circle(frame_display, tuple(right_int), 5, (0,0,255), -1)
 
-        # 업데이트가 되었을 때 터미널에는 디버깅용 전체 메시지 출력하고,
-        # 아두이노에는 필요한 명령만 CSV 형식으로 전송.
+        # 만약 global_stop 플래그가 True이면 모든 모터 명령을 STOP으로 변경
+        if global_stop:
+            for i in range(5):
+                current_command_left[i] = "STOP"
+                error_left_arr[i] = 0
+                current_command_right[i] = "STOP"
+                error_right_arr[i] = 0
+            updated = True
+            global_stop = False  # 플래그 초기화
+
         if updated:
+            # 터미널에 디버깅용 전체 메시지 출력
             print("Motor Commands (Debug Info):")
             for i in range(5):
                 cmd = current_command_left[i] if current_command_left[i] is not None else "N/A"
@@ -295,7 +305,7 @@ while True:
             for i in range(5):
                 cmd = current_command_right[i] if current_command_right[i] is not None else "N/A"
                 print(f"Motor R{i+1}: {cmd} (Error: {error_right_arr[i]:.2f}°)")
-            # 아두이노 전송: 오직 CSV 형식의 명령 문자열만 전송
+            # 아두이노로는 CSV 형식의 간소화된 명령만 전송
             for i in range(5):
                 if current_command_left[i] is not None:
                     command_str = f"L{i+1},{current_command_left[i]},{error_left_arr[i]:.2f}"
@@ -325,7 +335,7 @@ while True:
                             (right_int[0]+10, right_int[1]-10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
 
-    # 캘리브레이션 종료
+    # 캘리브레이션 종료 처리
     if not calibrated and (time.time() - calibration_start_time >= CALIBRATION_DURATION):
         calibrated = True
         for i in range(5):
