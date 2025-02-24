@@ -3,6 +3,8 @@ import numpy as np
 import time
 import serial
 
+#프레임 상에 잡히는 너비를 30cm라고 잡고, 모터가 360 회전할때를 6cm로 잡고 픽셀거리 계산한거라 수정 소용 있음. 초점거리는 고려 x
+
 # Serial Setup
 try:
     ser = serial.Serial("COM3", 115200, timeout=0.1)
@@ -11,9 +13,7 @@ except Exception as e:
     print("Ser_failed")
     ser = None
 
-# ---------------------------
-# Helper functions
-# ---------------------------
+# Functions
 def detect_black_blobs(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     params = cv2.SimpleBlobDetector_Params()
@@ -94,9 +94,7 @@ def compute_relative(baseline_angles):
     base = min(valid)
     return [a - base if a > 0 else 0 for a in baseline_angles]
 
-# ---------------------------
 # 설정 및 변수
-# ---------------------------
 CALIBRATION_DURATION = 5.0  # 캘리브레이션 시간 (초)
 calibration_start_time = time.time()
 calibrated = False
@@ -120,13 +118,11 @@ fixed_intersections_right = [None] * 5
 done_received = False
 first_measurement_done = False
 
-# CSV 명령 전송 딜레이 (테스트 단계)
+# CSV 명령 전송 딜레이 (테스트 단계)<--- 이 부분을 실제에선 많이 줄여도 될듯, 근데 없애면 제어명령이 너무 자주 들어가서 정교함이 떨어질듯.
 csv_delay = 2  # 초
 last_csv_send_time = 0
 
-# ---------------------------
 # 메인 루프
-# ---------------------------
 cap = cv2.VideoCapture(2)
 
 while True:
@@ -176,7 +172,7 @@ while True:
                 calibration_right_baseline[i] = trimmed_mean(right_angle_data[i], trim_fraction=0.1)
         calibration_left_baseline = compute_relative(calibration_left_baseline)
         calibration_right_baseline = compute_relative(calibration_right_baseline)
-        # 캘리브레이션 관련 출력은 제거됨.
+
         # 고정된 교점 계산: 누적된 교점의 평균값
         for i in range(5):
             if left_intersections_calib[i]:
@@ -190,10 +186,9 @@ while True:
             else:
                 fixed_intersections_right[i] = None
         first_measurement_done = False
-        # 짧은 대기 후 캘리브레이션 완료 상태로 진입 (이 대기는 여기서만 사용하며, 이후 딜레이는 비차단 방식으로 처리)
         time.sleep(0.1)
 
-    # 영상에 검출 결과 표시 (교점, 블롭, 라인 등)
+    # 영상에 검출 결과 표시 
     if outer_contour is not None:
         cv2.drawContours(frame_display, [outer_contour], -1, (0, 255, 255), 2)
     points = detect_black_blobs(frame)
@@ -220,7 +215,7 @@ while True:
             horizontal_lines.append(line_temp)
             cv2.line(frame_display, left_points[i], right_points[i], (255, 0, 0), 2)
         
-        # 캘리브레이션 완료 후 최초 측정 또는 "done" 신호가 있으면, 딜레이를 타임스탬프로 구현하여 CSV 명령 전송
+        # 캘리브레이션 완료 후 최초 측정 또는 "done" 신호,  CSV 명령 전송
         current_time = time.time()
         if calibrated and (not first_measurement_done or done_received) and (current_time - last_csv_send_time >= csv_delay):
             print("CSV 명령 출력:")
