@@ -3,22 +3,16 @@ import numpy as np
 import time
 import serial
 
-# ======================
 # Serial Setup
-# ======================
+
 try:
     ser = serial.Serial("COM3", 115200, timeout=0.1)
-    print("Serial connected.")
+    print("Ser_connected")
 except Exception as e:
-    print("Serial connection failed, using keyboard input for done signals.")
-    ser = None
+    print("Ser_failed")
 
-# 전역 변수: 아두이노에서 "0" 신호를 받거나 키보드 "0" 입력 시 모든 모터 정지
-global_stop = False
-
-# ======================
 # Helper functions
-# ======================
+
 def detect_black_blobs(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     params = cv2.SimpleBlobDetector_Params()

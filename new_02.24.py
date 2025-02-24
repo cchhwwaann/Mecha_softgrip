@@ -3,21 +3,17 @@ import numpy as np
 import time
 import serial
 
-# ======================
 # Serial Setup
-# ======================
 try:
     ser = serial.Serial("COM3", 115200, timeout=0.1)
-    print("Serial connected.")
+    print("Ser_connected")
 except Exception as e:
-    print("Serial connection failed, using keyboard input for done signals.")
+    print("Ser_failed")
     ser = None
 
-# 글로벌 스탑 관련 처리는 제거됨
-
-# ======================
+# ---------------------------
 # Helper functions
-# ======================
+# ---------------------------
 def detect_black_blobs(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     params = cv2.SimpleBlobDetector_Params()
@@ -87,9 +83,9 @@ def trimmed_mean(data, trim_fraction=0.1):
     sorted_data = sorted(data)
     trim_count = int(n * trim_fraction)
     if n - 2*trim_count <= 0:
-        return sum(sorted_data)/n
+        return sum(sorted_data) / n
     trimmed_data = sorted_data[trim_count:n-trim_count]
-    return sum(trimmed_data)/len(trimmed_data)
+    return sum(trimmed_data) / len(trimmed_data)
 
 def compute_relative(baseline_angles):
     valid = [a for a in baseline_angles if a > 0]
@@ -98,36 +94,39 @@ def compute_relative(baseline_angles):
     base = min(valid)
     return [a - base if a > 0 else 0 for a in baseline_angles]
 
-# ==============================
+# ---------------------------
 # 설정 및 변수
-# ==============================
+# ---------------------------
 CALIBRATION_DURATION = 5.0  # 캘리브레이션 시간 (초)
 calibration_start_time = time.time()
 calibrated = False
 
 left_angle_data = [[] for _ in range(5)]
 right_angle_data = [[] for _ in range(5)]
-calibration_left_baseline = [0] * 5
+calibration_left_baseline = [0] * 5  
 calibration_right_baseline = [0] * 5
 
-# 여기서 TARGET_ANGLE은 60° (즉, 1cm가 60° 회전에 해당)
 TARGET_ANGLE = 60.0
-TOLERANCE = 10.0  # 적정 범위: 50° ~ 70°
+TOLERANCE = 10.0
 
-# 캘리브레이션 동안 각 라인의 교점 좌표(좌측, 우측)를 저장할 리스트 (각각 5개)
+# 캘리브레이션 동안 교점 좌표 저장 (각각 5개)
 left_intersections_calib = [[] for _ in range(5)]
 right_intersections_calib = [[] for _ in range(5)]
 # 캘리브레이션 후 고정된 교점 좌표 (각각 5개)
 fixed_intersections_left = [None] * 5
 fixed_intersections_right = [None] * 5
 
-# done 신호: "0" 입력 시 각 모터에 대해 done 처리
-motor_done_left = [False] * 5    
-motor_done_right = [False] * 5   
+# 아두이노 done 신호 플래그 및 최초 측정 여부
+done_received = False
+first_measurement_done = False
 
-# ==============================
+# CSV 명령 전송 딜레이 (테스트 단계)
+csv_delay = 2  # 초
+last_csv_send_time = 0
+
+# ---------------------------
 # 메인 루프
-# ==============================
+# ---------------------------
 cap = cv2.VideoCapture(2)
 
 while True:
@@ -139,14 +138,17 @@ while True:
     frame_display = frame.copy()
     frame_width = frame.shape[1]
 
-    # -------- 시리얼 데이터 읽기 --------
-    # 글로벌 스탑 명령 관련 처리는 제거됨.
-    # ------------------------------------
+    # 아두이노로부터 done 신호 수신
+    if ser is not None and ser.in_waiting:
+        line = ser.readline().decode().strip()
+        if line.lower() == "done":
+            done_received = True
+            print("Received done signal from Arduino.")
 
-    # 외형선 검출
+    # 외형 윤곽선 검출
     outer_contour = detect_outer_object_contour(frame)
 
-    # 캘리브레이션 중이면, 교점 좌표 저장
+    # 캘리브레이션 중이면 교점 좌표 저장
     if not calibrated and outer_contour is not None:
         points = detect_black_blobs(frame)
         if len(points) == 10:
@@ -160,175 +162,13 @@ while True:
                 intersections = get_intersections_for_line(line_temp, outer_contour)
                 if intersections:
                     intersections = sorted(intersections, key=lambda pt: pt[0])
-                    left_int = intersections[0]
-                    right_int = intersections[-1]
-                    left_intersections_calib[idx].append(left_int)
-                    right_intersections_calib[idx].append(right_int)
+                    left_intersections_calib[idx].append(intersections[0])
+                    right_intersections_calib[idx].append(intersections[-1])
 
-    # 캘리브레이션 후, 고정된 교점 사용
-    if calibrated:
-        used_fixed_left = fixed_intersections_left
-        used_fixed_right = fixed_intersections_right
-    else:
-        used_fixed_left = [None] * 5
-        used_fixed_right = [None] * 5
-        if outer_contour is not None:
-            points = detect_black_blobs(frame)
-            if len(points) == 10:
-                sorted_by_x = sorted(points, key=lambda p: p[0])
-                left_points = sorted_by_x[:5]
-                right_points = sorted_by_x[5:]
-                left_points = sorted(left_points, key=lambda p: p[1])
-                right_points = sorted(right_points, key=lambda p: p[1])
-                for idx in range(5):
-                    line_temp = (left_points[idx], right_points[idx])
-                    intersections = get_intersections_for_line(line_temp, outer_contour)
-                    if intersections:
-                        intersections = sorted(intersections, key=lambda pt: pt[0])
-                        used_fixed_left[idx] = intersections[0]
-                        used_fixed_right[idx] = intersections[-1]
-
-    if outer_contour is not None:
-        cv2.drawContours(frame_display, [outer_contour], -1, (0,255,255), 2)
-
-    points = detect_black_blobs(frame)
-    for pt in points:
-        cv2.circle(frame_display, pt, 5, (0,255,0), -1)
-
-    if len(points) == 10:
-        sorted_by_x = sorted(points, key=lambda p: p[0])
-        left_points = sorted_by_x[:5]
-        right_points = sorted_by_x[5:]
-        left_points = sorted(left_points, key=lambda p: p[1])
-        right_points = sorted(right_points, key=lambda p: p[1])
-        for i, pt in enumerate(left_points):
-            cv2.putText(frame_display, f"L{i+1}", (pt[0]-20, pt[1]),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
-        for i, pt in enumerate(right_points):
-            cv2.putText(frame_display, f"R{i+1}", (pt[0]+5, pt[1]),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
-        
-        horizontal_lines = []
-        for i in range(5):
-            line_temp = (left_points[i], right_points[i])
-            horizontal_lines.append(line_temp)
-            cv2.line(frame_display, left_points[i], right_points[i], (255,0,0), 2)
-        
-        # 임시 변수 초기화
-        current_additional_left = [None] * 5
-        current_additional_right = [None] * 5
-        current_command_left = [None] * 5
-        current_command_right = [None] * 5
-        error_left_arr = [0] * 5
-        error_right_arr = [0] * 5
-
-        updated = False  # 이번 프레임 업데이트 여부
-
-        for idx, line_temp in enumerate(horizontal_lines):
-            if calibrated:
-                left_int = fixed_intersections_left[idx]
-                right_int = fixed_intersections_right[idx]
-            else:
-                left_int = used_fixed_left[idx]
-                right_int = used_fixed_right[idx]
-            if left_int is None or right_int is None:
-                continue
-
-            # 검출된 점과 고정 교점 사이의 유클리드 거리로 실제 거리 계산
-            left_distance_px = np.sqrt((left_points[idx][0] - left_int[0])**2 + (left_points[idx][1] - left_int[1])**2)
-            right_distance_px = np.sqrt((right_points[idx][0] - right_int[0])**2 + (right_points[idx][1] - right_int[1])**2)
-            left_distance_cm = left_distance_px * (30.0 / frame_width)
-            right_distance_cm = right_distance_px * (30.0 / frame_width)
-            measured_left_angle = left_distance_cm * 60
-            measured_right_angle = right_distance_cm * 60
-
-            if not calibrated:
-                left_angle_data[idx].append(measured_left_angle)
-                right_angle_data[idx].append(measured_right_angle)
-            else:
-                # 각도가 TARGET 60° ± TOLERANCE 10° 이내면 STOP,
-                # 그렇지 않고 모터 완료 신호가 있으면 REV/FWD 명령 처리
-                if TARGET_ANGLE - TOLERANCE <= measured_left_angle <= TARGET_ANGLE + TOLERANCE:
-                    current_command_left[idx] = "STOP"
-                    error_left_arr[idx] = 0
-                    updated = True
-                elif motor_done_left[idx]:
-                    current_additional_left[idx] = measured_left_angle
-                    if measured_left_angle < TARGET_ANGLE - TOLERANCE:
-                        current_command_left[idx] = "REV"
-                        error_left_arr[idx] = TARGET_ANGLE - measured_left_angle
-                    elif measured_left_angle > TARGET_ANGLE + TOLERANCE:
-                        current_command_left[idx] = "FWD"
-                        error_left_arr[idx] = measured_left_angle - TARGET_ANGLE
-                    motor_done_left[idx] = False
-                    updated = True
-
-                if TARGET_ANGLE - TOLERANCE <= measured_right_angle <= TARGET_ANGLE + TOLERANCE:
-                    current_command_right[idx] = "STOP"
-                    error_right_arr[idx] = 0
-                    updated = True
-                elif motor_done_right[idx]:
-                    current_additional_right[idx] = measured_right_angle
-                    if measured_right_angle < TARGET_ANGLE - TOLERANCE:
-                        current_command_right[idx] = "REV"
-                        error_right_arr[idx] = TARGET_ANGLE - measured_right_angle
-                    elif measured_right_angle > TARGET_ANGLE + TOLERANCE:
-                        current_command_right[idx] = "FWD"
-                        error_right_arr[idx] = measured_right_angle - TARGET_ANGLE
-                    motor_done_right[idx] = False
-                    updated = True
-
-            # 고정 교점 표시
-            cv2.circle(frame_display, tuple(left_int), 5, (0,0,255), -1)
-            cv2.circle(frame_display, tuple(right_int), 5, (0,0,255), -1)
-
-        if updated:
-            # CSV 형식으로 디버깅 메시지 생성
-            csv_parts = []
-            for i in range(5):
-                left_cmd = current_command_left[i] if current_command_left[i] is not None else "N/A"
-                right_cmd = current_command_right[i] if current_command_right[i] is not None else "N/A"
-                csv_parts.append(f"L{i+1},{left_cmd},{error_left_arr[i]:.2f}")
-                csv_parts.append(f"R{i+1},{right_cmd},{error_right_arr[i]:.2f}")
-            debug_csv = ",".join(csv_parts)
-            # 터미널에 CSV 형식으로 출력
-            print(debug_csv)
-            # 시리얼 포트로도 전송
-            if ser is not None:
-                ser.write((debug_csv + "\n").encode())
-            
-            # 각 모터에 대한 제어 명령을 아두이노로 개별 전송 (기존 CSV 형식)
-            for i in range(5):
-                if current_command_left[i] is not None:
-                    command_str = f"L{i+1},{current_command_left[i]},{error_left_arr[i]:.2f}"
-                    if ser is not None:
-                        ser.write((command_str + "\n").encode())
-            for i in range(5):
-                if current_command_right[i] is not None:
-                    command_str = f"R{i+1},{current_command_right[i]},{error_right_arr[i]:.2f}"
-                    if ser is not None:
-                        ser.write((command_str + "\n").encode())
-
-        for idx, line_temp in enumerate(horizontal_lines):
-            if calibrated:
-                left_int = fixed_intersections_left[idx]
-                right_int = fixed_intersections_right[idx]
-            else:
-                left_int = used_fixed_left[idx]
-                right_int = used_fixed_right[idx]
-            if left_int is None or right_int is None:
-                continue
-            if current_command_left[idx] is not None:
-                cv2.putText(frame_display, f"{current_command_left[idx]} {measured_left_angle:.1f}",
-                            (left_int[0]-20, left_int[1]-10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
-            if current_command_right[idx] is not None:
-                cv2.putText(frame_display, f"{current_command_right[idx]} {measured_right_angle:.1f}",
-                            (right_int[0]+10, right_int[1]-10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
-
+    # 캘리브레이션 완료 및 고정 교점 계산 (5초 후)
     if not calibrated and (time.time() - calibration_start_time >= CALIBRATION_DURATION):
         calibrated = True
+        # 내부 처리용으로 캘리브레이션 동안 수집된 각도 데이터의 평균 계산
         for i in range(5):
             if left_angle_data[i]:
                 calibration_left_baseline[i] = trimmed_mean(left_angle_data[i], trim_fraction=0.1)
@@ -336,11 +176,8 @@ while True:
                 calibration_right_baseline[i] = trimmed_mean(right_angle_data[i], trim_fraction=0.1)
         calibration_left_baseline = compute_relative(calibration_left_baseline)
         calibration_right_baseline = compute_relative(calibration_right_baseline)
-        print("Calibration complete.")
-        for i in range(5):
-            print(f"Line {i+1}: Calibration Left = {calibration_left_baseline[i]:.2f}°, Calibration Right = {calibration_right_baseline[i]:.2f}°")
-        
-        # 캘리브레이션 동안 저장된 좌측/우측 교점 좌표의 평균으로 고정 교점 계산
+        # 캘리브레이션 관련 출력은 제거됨.
+        # 고정된 교점 계산: 누적된 교점의 평균값
         for i in range(5):
             if left_intersections_calib[i]:
                 pts = np.array(left_intersections_calib[i])
@@ -352,21 +189,118 @@ while True:
                 fixed_intersections_right[i] = tuple(np.mean(pts, axis=0).astype(np.int32))
             else:
                 fixed_intersections_right[i] = None
-        print("Fixed intersection points determined by averaging calibration intersections.")
+        first_measurement_done = False
+        # 짧은 대기 후 캘리브레이션 완료 상태로 진입 (이 대기는 여기서만 사용하며, 이후 딜레이는 비차단 방식으로 처리)
+        time.sleep(0.1)
+
+    # 영상에 검출 결과 표시 (교점, 블롭, 라인 등)
+    if outer_contour is not None:
+        cv2.drawContours(frame_display, [outer_contour], -1, (0, 255, 255), 2)
+    points = detect_black_blobs(frame)
+    for pt in points:
+        cv2.circle(frame_display, pt, 5, (0, 255, 0), -1)
+
+    if len(points) == 10:
+        sorted_by_x = sorted(points, key=lambda p: p[0])
+        left_points = sorted_by_x[:5]
+        right_points = sorted_by_x[5:]
+        left_points = sorted(left_points, key=lambda p: p[1])
+        right_points = sorted(right_points, key=lambda p: p[1])
+        # 좌측/우측 블롭 라벨 표시
+        for i, pt in enumerate(left_points):
+            cv2.putText(frame_display, f"L{i+1}", (pt[0]-20, pt[1]),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+        for i, pt in enumerate(right_points):
+            cv2.putText(frame_display, f"R{i+1}", (pt[0]+5, pt[1]),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+        # 각 라인의 수평선 그리기
+        horizontal_lines = []
+        for i in range(5):
+            line_temp = (left_points[i], right_points[i])
+            horizontal_lines.append(line_temp)
+            cv2.line(frame_display, left_points[i], right_points[i], (255, 0, 0), 2)
         
-        time.sleep(2)
-    
+        # 캘리브레이션 완료 후 최초 측정 또는 "done" 신호가 있으면, 딜레이를 타임스탬프로 구현하여 CSV 명령 전송
+        current_time = time.time()
+        if calibrated and (not first_measurement_done or done_received) and (current_time - last_csv_send_time >= csv_delay):
+            print("CSV 명령 출력:")
+            for idx, line_temp in enumerate(horizontal_lines):
+                left_int = fixed_intersections_left[idx]
+                right_int = fixed_intersections_right[idx]
+                if left_int is None or right_int is None:
+                    continue
+                left_distance_px = np.sqrt((left_points[idx][0] - left_int[0])**2 + (left_points[idx][1] - left_int[1])**2)
+                right_distance_px = np.sqrt((right_points[idx][0] - right_int[0])**2 + (right_points[idx][1] - right_int[1])**2)
+                left_distance_cm = left_distance_px * (30.0 / frame_width)
+                right_distance_cm = right_distance_px * (30.0 / frame_width)
+                measured_left_angle = int(left_distance_cm * 60)
+                measured_right_angle = int(right_distance_cm * 60)
+
+                if TARGET_ANGLE - TOLERANCE <= measured_left_angle <= TARGET_ANGLE + TOLERANCE:
+                    cmd_left = "STOP"
+                    error_left = 0
+                elif measured_left_angle < TARGET_ANGLE - TOLERANCE:
+                    cmd_left = "REV"
+                    error_left = int(TARGET_ANGLE - measured_left_angle)
+                else:
+                    cmd_left = "FWD"
+                    error_left = int(measured_left_angle - TARGET_ANGLE)
+
+                if TARGET_ANGLE - TOLERANCE <= measured_right_angle <= TARGET_ANGLE + TOLERANCE:
+                    cmd_right = "STOP"
+                    error_right = 0
+                elif measured_right_angle < TARGET_ANGLE - TOLERANCE:
+                    cmd_right = "REV"
+                    error_right = int(TARGET_ANGLE - measured_right_angle)
+                else:
+                    cmd_right = "FWD"
+                    error_right = int(measured_right_angle - TARGET_ANGLE)
+
+                csv_left = f"L{idx+1},{cmd_left},{error_left}"
+                csv_right = f"R{idx+1},{cmd_right},{error_right}"
+                print(csv_left)
+                print(csv_right)
+                if ser is not None:
+                    ser.write((csv_left + "\n").encode())
+                    ser.write((csv_right + "\n").encode())
+            first_measurement_done = True
+            done_received = False
+            last_csv_send_time = current_time  # 딜레이 시작 시각 업데이트
+
+        # 화면에 측정된 각도 값 정수로 표시
+        for idx, line_temp in enumerate(horizontal_lines):
+            left_int = fixed_intersections_left[idx]
+            right_int = fixed_intersections_right[idx]
+            if left_int is None or right_int is None:
+                continue
+            left_distance_px = np.sqrt((left_points[idx][0] - left_int[0])**2 + (left_points[idx][1] - left_int[1])**2)
+            right_distance_px = np.sqrt((right_points[idx][0] - right_int[0])**2 + (right_points[idx][1] - right_int[1])**2)
+            left_distance_cm = left_distance_px * (30.0 / frame_width)
+            right_distance_cm = right_distance_px * (30.0 / frame_width)
+            measured_left_angle = int(left_distance_cm * 60)
+            measured_right_angle = int(right_distance_cm * 60)
+            cv2.putText(frame_display, f"{measured_left_angle}°",
+                        (left_int[0]-20, left_int[1]-10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            cv2.putText(frame_display, f"{measured_right_angle}°",
+                        (right_int[0]+10, right_int[1]-10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+
+    # 캘리브레이션 완료 후 고정 교점을 항상 프레임에 표시
+    if calibrated:
+        for idx in range(5):
+            if fixed_intersections_left[idx] is not None:
+                cv2.circle(frame_display, fixed_intersections_left[idx], 5, (0, 255, 255), -1)
+            if fixed_intersections_right[idx] is not None:
+                cv2.circle(frame_display, fixed_intersections_right[idx], 5, (0, 255, 255), -1)
+
     cv2.imshow("Frame", frame_display)
     
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
+        if ser is not None:
+            ser.write("finish\n".encode())
         break
-    # 키보드 입력: "0" 입력 시 각 모터에 대해 done 신호 처리
-    if key == ord('0'):
-        for i in range(5):
-            motor_done_left[i] = True
-            motor_done_right[i] = True
-        print("Simulated global done signal for ALL motors via keyboard")
 
 cap.release()
 cv2.destroyAllWindows()
