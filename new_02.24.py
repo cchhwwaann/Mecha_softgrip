@@ -13,6 +13,8 @@ except Exception as e:
     print("Serial connection failed, using keyboard input for done signals.")
     ser = None
 
+# 글로벌 스탑 관련 처리는 제거됨
+
 # ======================
 # Helper functions
 # ======================
@@ -71,7 +73,7 @@ def get_intersections_for_line(line, contour):
     intersections = []
     pts = contour[:,0,:]
     for i in range(len(pts)):
-        seg = (tuple(pts[i]), tuple(pts[(i+1)%len(pts)]))
+        seg = (tuple(pts[i]), tuple(pts[(i+1) % len(pts)]))
         inter_pt = line_intersection(line, seg)
         if inter_pt is not None:
             if is_point_on_segment(inter_pt, line) and is_point_on_segment(inter_pt, seg):
@@ -108,8 +110,9 @@ right_angle_data = [[] for _ in range(5)]
 calibration_left_baseline = [0] * 5
 calibration_right_baseline = [0] * 5
 
-TARGET_ANGLE = 100.0
-TOLERANCE = 10.0  # 즉, 90° ~ 110° 범위
+# 여기서 TARGET_ANGLE은 60° (즉, 1cm가 60° 회전에 해당)
+TARGET_ANGLE = 60.0
+TOLERANCE = 10.0  # 적정 범위: 50° ~ 70°
 
 # 캘리브레이션 동안 각 라인의 교점 좌표(좌측, 우측)를 저장할 리스트 (각각 5개)
 left_intersections_calib = [[] for _ in range(5)]
@@ -118,7 +121,7 @@ right_intersections_calib = [[] for _ in range(5)]
 fixed_intersections_left = [None] * 5
 fixed_intersections_right = [None] * 5
 
-# 전역 done 신호: "0" 입력 시 모든 모터에 대해 done 처리
+# done 신호: "0" 입력 시 각 모터에 대해 done 처리
 motor_done_left = [False] * 5    
 motor_done_right = [False] * 5   
 
@@ -137,16 +140,10 @@ while True:
     frame_width = frame.shape[1]
 
     # -------- 시리얼 데이터 읽기 --------
-    if ser is not None and ser.in_waiting:
-        line = ser.readline().decode().strip()
-        if line == "0":
-            for i in range(5):
-                motor_done_left[i] = True
-                motor_done_right[i] = True
-            print("Received global done signal via serial (0)")
+    # 글로벌 스탑 명령 관련 처리는 제거됨.
     # ------------------------------------
 
-    # 외형선 검출 (캘리브레이션 동안 사용)
+    # 외형선 검출
     outer_contour = detect_outer_object_contour(frame)
 
     # 캘리브레이션 중이면, 교점 좌표 저장
@@ -168,12 +165,11 @@ while True:
                     left_intersections_calib[idx].append(left_int)
                     right_intersections_calib[idx].append(right_int)
 
-    # 캘리브레이션 완료 후 고정된 교점 사용
+    # 캘리브레이션 후, 고정된 교점 사용
     if calibrated:
         used_fixed_left = fixed_intersections_left
         used_fixed_right = fixed_intersections_right
     else:
-        # 캘리브레이션 중에는 임시로 외형선에서 교점을 계산
         used_fixed_left = [None] * 5
         used_fixed_right = [None] * 5
         if outer_contour is not None:
@@ -229,7 +225,6 @@ while True:
         updated = False  # 이번 프레임 업데이트 여부
 
         for idx, line_temp in enumerate(horizontal_lines):
-            # 캘리브레이션 후엔 고정된 교점 사용, 아니면 임시 교점 사용
             if calibrated:
                 left_int = fixed_intersections_left[idx]
                 right_int = fixed_intersections_right[idx]
@@ -239,7 +234,7 @@ while True:
             if left_int is None or right_int is None:
                 continue
 
-            # 검정 점과 고정 교점 사이의 x 좌표 차이 및 각도 계산
+            # 검출된 점과 고정 교점 사이의 유클리드 거리로 실제 거리 계산
             left_distance_px = np.sqrt((left_points[idx][0] - left_int[0])**2 + (left_points[idx][1] - left_int[1])**2)
             right_distance_px = np.sqrt((right_points[idx][0] - right_int[0])**2 + (right_points[idx][1] - right_int[1])**2)
             left_distance_cm = left_distance_px * (30.0 / frame_width)
@@ -251,12 +246,12 @@ while True:
                 left_angle_data[idx].append(measured_left_angle)
                 right_angle_data[idx].append(measured_right_angle)
             else:
-                # 먼저, 실시간으로 각도가 TARGET_ANGLE ± TOLERANCE 범위이면 바로 STOP
+                # 각도가 TARGET 60° ± TOLERANCE 10° 이내면 STOP,
+                # 그렇지 않고 모터 완료 신호가 있으면 REV/FWD 명령 처리
                 if TARGET_ANGLE - TOLERANCE <= measured_left_angle <= TARGET_ANGLE + TOLERANCE:
                     current_command_left[idx] = "STOP"
                     error_left_arr[idx] = 0
                     updated = True
-                # done 신호가 있으면 REV/FWD 업데이트
                 elif motor_done_left[idx]:
                     current_additional_left[idx] = measured_left_angle
                     if measured_left_angle < TARGET_ANGLE - TOLERANCE:
@@ -283,18 +278,36 @@ while True:
                     motor_done_right[idx] = False
                     updated = True
 
-            # 화면에 고정 교점 표시
+            # 고정 교점 표시
             cv2.circle(frame_display, tuple(left_int), 5, (0,0,255), -1)
             cv2.circle(frame_display, tuple(right_int), 5, (0,0,255), -1)
 
         if updated:
-            print("Motor Commands:")
+            # CSV 형식으로 디버깅 메시지 생성
+            csv_parts = []
             for i in range(5):
-                cmd = current_command_left[i] if current_command_left[i] is not None else "N/A"
-                print(f"Motor L{i+1}: {cmd} (Error: {error_left_arr[i]:.2f}°)")
+                left_cmd = current_command_left[i] if current_command_left[i] is not None else "N/A"
+                right_cmd = current_command_right[i] if current_command_right[i] is not None else "N/A"
+                csv_parts.append(f"L{i+1},{left_cmd},{error_left_arr[i]:.2f}")
+                csv_parts.append(f"R{i+1},{right_cmd},{error_right_arr[i]:.2f}")
+            debug_csv = ",".join(csv_parts)
+            # 터미널에 CSV 형식으로 출력
+            print(debug_csv)
+            # 시리얼 포트로도 전송
+            if ser is not None:
+                ser.write((debug_csv + "\n").encode())
+            
+            # 각 모터에 대한 제어 명령을 아두이노로 개별 전송 (기존 CSV 형식)
             for i in range(5):
-                cmd = current_command_right[i] if current_command_right[i] is not None else "N/A"
-                print(f"Motor R{i+1}: {cmd} (Error: {error_right_arr[i]:.2f}°)")
+                if current_command_left[i] is not None:
+                    command_str = f"L{i+1},{current_command_left[i]},{error_left_arr[i]:.2f}"
+                    if ser is not None:
+                        ser.write((command_str + "\n").encode())
+            for i in range(5):
+                if current_command_right[i] is not None:
+                    command_str = f"R{i+1},{current_command_right[i]},{error_right_arr[i]:.2f}"
+                    if ser is not None:
+                        ser.write((command_str + "\n").encode())
 
         for idx, line_temp in enumerate(horizontal_lines):
             if calibrated:
@@ -314,7 +327,6 @@ while True:
                             (right_int[0]+10, right_int[1]-10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
 
-    # 캘리브레이션 종료
     if not calibrated and (time.time() - calibration_start_time >= CALIBRATION_DURATION):
         calibrated = True
         for i in range(5):
@@ -328,7 +340,7 @@ while True:
         for i in range(5):
             print(f"Line {i+1}: Calibration Left = {calibration_left_baseline[i]:.2f}°, Calibration Right = {calibration_right_baseline[i]:.2f}°")
         
-        # 고정된 교점 좌표 계산: 캘리브레이션 동안 저장된 좌표들의 단순 평균
+        # 캘리브레이션 동안 저장된 좌측/우측 교점 좌표의 평균으로 고정 교점 계산
         for i in range(5):
             if left_intersections_calib[i]:
                 pts = np.array(left_intersections_calib[i])
@@ -349,7 +361,7 @@ while True:
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
         break
-    # 키보드 입력: "0" 입력 시 전역 done 신호 처리 (모든 모터)
+    # 키보드 입력: "0" 입력 시 각 모터에 대해 done 신호 처리
     if key == ord('0'):
         for i in range(5):
             motor_done_left[i] = True
