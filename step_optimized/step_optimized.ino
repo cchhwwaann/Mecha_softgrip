@@ -6,16 +6,16 @@ const int motorCount = 10;
 // 예시 핀 배정 (각 모터 4핀씩)
 // 실제 사용 환경에 맞게 수정하세요.
 int motorPins[motorCount][4] = {
-  {2, 3, 4, 5},       // L1
-  {8, 10, 9, 11},     // L2
-  {6, 7, 12, 13},     // L3
-  {A0, A1, A2, A3},   // L4
-  {A4, A5, A6, A7},   // L5
-  {22, 23, 24, 25},   // R1
-  {26, 27, 28, 29},   // R2
-  {30, 31, 32, 33},   // R3
-  {34, 35, 36, 37},   // R4
-  {38, 39, 40, 41}    // R5
+  {A0, A2, A1, A3},       // L1
+  {A4, A6, A5, A7},       // L2
+  {A8, A10, A9, A11},      // L3
+  {A12, A14, A13, A15},    // L4
+  {23, 27, 25, 29},        // L5
+  {4, 6, 5, 7},           // R1
+  {8, 10, 9, 11},         // R2
+  {14, 16, 15, 17},       // R3
+  {18, 20, 19, 21},       // R4
+  {22, 26, 24, 28}        // R5
 };
 
 Stepper* motors[motorCount];
@@ -45,7 +45,7 @@ void setup() {
 }
 
 void loop() {
-  // 읽은 모든 시리얼 데이터를 처리
+  // 시리얼 데이터를 모두 읽어들임
   while (Serial.available() > 0) {
     String input = Serial.readStringUntil('\n');
     input.trim();
@@ -55,7 +55,7 @@ void loop() {
     // "finish" 명령 처리: 모든 모터를 초기 위치로 복귀
     if (input.equalsIgnoreCase("finish")) {
       for (int i = 0; i < motorCount; i++) {
-        motors[i]->step(-currentPositions[i]); // 누적 스텝만큼 반대방향 회전
+        motors[i]->step(currentPositions[i]); // 누적 스텝만큼 반대방향 회전
         currentPositions[i] = 0;
       }
       Serial.println("done");
@@ -105,35 +105,47 @@ void loop() {
       break;
     }
   }
+  
+  // 모든 명령이 수신되면, 각 모터에 대해 동시에 동작 실행
   if (allReceived) {
-    // 모든 모터에 대해 명령 실행
+    // 각 모터의 이동해야 할 스텝 수(양의 정수)를 계산합니다.
+    // REV: motors[i]->step(1) 호출, 이동 후 currentPositions[i] -= 1;
+    // FWD: motors[i]->step(-1) 호출, 이동 후 currentPositions[i] += 1;
+    long remainingSteps[motorCount];
     for (int i = 0; i < motorCount; i++) {
       String cmd = commands[i].command;
       float errorAngle = commands[i].errorAngle;
       // 360°가 stepsPerRevolution 스텝에 해당하므로 회전할 스텝 수 계산
       long steps = (long)((errorAngle / 360.0) * stepsPerRevolution);
-
       if (cmd.equalsIgnoreCase("STOP")) {
-        // 움직임 없음
-      }
-      else if (cmd.equalsIgnoreCase("REV")) {
-        motors[i]->step(-steps);
-        currentPositions[i] -= steps;
-      }
-      else if (cmd.equalsIgnoreCase("FWD")) {
-        motors[i]->step(steps);
-        currentPositions[i] += steps;
-      }
-      else {
-        Serial.print("Error: Unknown command for motor ");
-        if (i < 5)
-          Serial.print("L");
-        else
-          Serial.print("R");
-        Serial.println(i < 5 ? i + 1 : i - 4);
+        remainingSteps[i] = 0;
+      } else {
+        remainingSteps[i] = steps; // REV, FWD 모두 동일한 스텝 수(양의 값)
       }
     }
-    // 모든 모터 명령 실행 후 단 한 번 "done" 전송
+    
+    // 남은 스텝 수가 0이 될 때까지 모든 모터를 1스텝씩 번갈아 가며 실행합니다.
+    bool motorsActive = true;
+    while (motorsActive) {
+      motorsActive = false;
+      for (int i = 0; i < motorCount; i++) {
+        if (remainingSteps[i] > 0) {
+          if (commands[i].command.equalsIgnoreCase("REV")) {
+            motors[i]->step(1);
+            currentPositions[i] -= 1;
+          } else if (commands[i].command.equalsIgnoreCase("FWD")) {
+            motors[i]->step(-1);
+            currentPositions[i] += 1;
+          }
+          remainingSteps[i]--;
+          if (remainingSteps[i] > 0) {
+            motorsActive = true;
+          }
+        }
+      }
+      delay(10); // 각 스텝 사이의 지연 시간 (속도 조절 필요시 수정)
+    }
+    // 모든 모터의 동작이 완료되면 done 신호 전송
     Serial.println("done");
     // 명령 배열 초기화
     for (int i = 0; i < motorCount; i++) {

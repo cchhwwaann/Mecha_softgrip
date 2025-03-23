@@ -5,7 +5,7 @@ import serial
 # Serial Setup
 # ======================
 try:
-    ser = serial.Serial("COM3", 115200, timeout=0.1)
+    ser = serial.Serial("COM6", 115200, timeout=0.1)
     print("Serial connected.")
 except Exception as e:
     print("Serial connection failed. Commands will only be printed to terminal.")
@@ -90,7 +90,6 @@ while not exit_program:
         right_line = f"R{i+1},{commands_right[i]},{errors_right[i]:.2f}"
         debug_lines.append(left_line)
         debug_lines.append(right_line)
-    
     debug_csv = "\n".join(debug_lines)
     
     # CSV 형식의 디버깅 메시지를 터미널에 출력
