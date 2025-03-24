@@ -3,6 +3,7 @@ import numpy as np
 import time
 import serial
 
+# 이 후에 되어야 할것. 형상인식 완료 후 리프트 모터 작동부분이랑, 그리핑 끝나면 다시 리프트 다운 시키는 부분
 
 # Serial Setup
 try:
