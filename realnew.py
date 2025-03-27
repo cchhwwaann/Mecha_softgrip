@@ -3,14 +3,23 @@ import numpy as np
 import time
 import serial
 
-
 # Serial Setup
 try:
     ser = serial.Serial("COM6", 115200, timeout=0.1)
     print("Ser_connected")
+    time.sleep(2)
 except Exception as e:
     print("Ser_failed")
     ser = None
+
+# 아두이노에 "start" 명령 전송 (연결된 경우)
+if ser is not None:
+    ser.write("start\n".encode())
+    ser.flush()  # 버퍼 플러시
+    print("Sent start signal to Arduino.")
+
+# 새로운 변수: Arduino로부터 "start" 신호를 받았는지 여부
+startReceived = False
 
 def detect_black_blobs(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -89,11 +98,12 @@ def trimmed_mean(data, trim_fraction=0.1):
 
 # Calibration and control parameters
 CALIBRATION_DURATION = 5.0  # 캘리브레이션 시간 (초)
-calibration_start_time = time.time()
+# 캘리브레이션 시작 시간은 "start" 신호 받은 후에 초기화됨.
+calibration_start_time = 0  
 calibrated = False
 
-TARGET_ANGLE = 80.0  # 목표 각도 (°)
-TOLERANCE = 10.0     # 허용 오차 (°)
+TARGET_ANGLE = 120.0  # 목표 각도 (°)
+TOLERANCE = 20.0      # 허용 오차 (°)
 
 # 캘리브레이션 동안, 각 가로선과 외형 윤곽선의 교차점을 누적 (왼쪽, 오른쪽 따로)
 calibration_intersections_left = [[] for _ in range(5)]
@@ -120,12 +130,25 @@ while True:
     frame_display = frame.copy()
     frame_height, frame_width = frame.shape[:2]
 
-    # 아두이노로부터 done 신호 수신
+    # 시리얼 입력 처리: "start" 신호를 받으면 캘리브레이션 시작
     if ser is not None and ser.in_waiting:
         line = ser.readline().decode().strip()
-        if line.lower() == "done":
+        if not startReceived and line.lower() == "started":
+            startReceived = True
+            calibration_start_time = time.time()  # "start" 신호를 받은 시점으로 캘리브레이션 시작 시간 초기화
+            print("Received start signal from Arduino. Starting calibration.")
+        elif line.lower() == "done":
             done_received = True
             print("Received done signal from Arduino.")
+
+    # 캘리브레이션은 startReceived가 되어야 진행됨.
+    if not startReceived:
+        cv2.putText(frame_display, "Waiting for start signal...", (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        cv2.imshow("Frame", frame_display)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+        continue
 
     # 외곽 윤곽선 검출 및 출력(파란선) (캘리브레이션 및 제어에 사용)
     outer_contour = detect_outer_object_contour(frame)
@@ -224,19 +247,22 @@ while True:
                 fixed_pt = fixed_intersections_left[idx]
                 blob_pt = associated_blobs_left[idx]
                 if fixed_pt is None or blob_pt is None:
-                    continue
-                x_diff_px = abs(blob_pt[0] - fixed_pt[0])
-                control_angle = int(x_diff_px * (30.0 / frame_width) * 60)
-                if TARGET_ANGLE - TOLERANCE <= control_angle <= TARGET_ANGLE + TOLERANCE:
-                    cmd = "STOP"
-                    error = 0
-                elif control_angle < TARGET_ANGLE - TOLERANCE:
-                    cmd = "REV"
-                    error = int(TARGET_ANGLE - control_angle)
+                    # 교점이 없으면 해당 모터는 STOP 명령 전송
+                    cmd_left = "STOP"
+                    error_left = 0
                 else:
-                    cmd = "FWD"
-                    error = int(control_angle - TARGET_ANGLE)
-                csv_command = f"L{idx+1},{cmd},{error}"
+                    x_diff_px = abs(blob_pt[0] - fixed_pt[0])
+                    control_angle = int(x_diff_px * (30.0 / frame_width) * 60)
+                    if TARGET_ANGLE - TOLERANCE <= control_angle <= TARGET_ANGLE + TOLERANCE:
+                        cmd_left = "STOP"
+                        error_left = 0
+                    elif control_angle < TARGET_ANGLE - TOLERANCE:
+                        cmd_left = "REV"
+                        error_left = int(TARGET_ANGLE - control_angle)
+                    else:
+                        cmd_left = "FWD"
+                        error_left = int(control_angle - TARGET_ANGLE)
+                csv_command = f"L{idx+1},{cmd_left},{error_left}"
                 print(csv_command)
                 if ser is not None:
                     ser.write((csv_command + "\n").encode())
@@ -245,22 +271,27 @@ while True:
                 fixed_pt = fixed_intersections_right[idx]
                 blob_pt = associated_blobs_right[idx]
                 if fixed_pt is None or blob_pt is None:
-                    continue
-                x_diff_px = abs(blob_pt[0] - fixed_pt[0])
-                control_angle = int(x_diff_px * (30.0 / frame_width) * 60)
-                if TARGET_ANGLE - TOLERANCE <= control_angle <= TARGET_ANGLE + TOLERANCE:
-                    cmd = "STOP"
-                    error = 0
-                elif control_angle < TARGET_ANGLE - TOLERANCE:
-                    cmd = "REV"
-                    error = int(TARGET_ANGLE - control_angle)
+                    cmd_right = "STOP"
+                    error_right = 0
                 else:
-                    cmd = "FWD"
-                    error = int(control_angle - TARGET_ANGLE)
-                csv_command = f"R{idx+1},{cmd},{error}"
+                    x_diff_px = abs(blob_pt[0] - fixed_pt[0])
+                    control_angle = int(x_diff_px * (30.0 / frame_width) * 60)
+                    if TARGET_ANGLE - TOLERANCE <= control_angle <= TARGET_ANGLE + TOLERANCE:
+                        cmd_right = "STOP"
+                        error_right = 0
+                    elif control_angle < TARGET_ANGLE - TOLERANCE:
+                        cmd_right = "REV"
+                        error_right = int(TARGET_ANGLE - control_angle)
+                    else:
+                        cmd_right = "FWD"
+                        error_right = int(control_angle - TARGET_ANGLE)
+                csv_command = f"R{idx+1},{cmd_right},{error_right}"
                 print(csv_command)
                 if ser is not None:
                     ser.write((csv_command + "\n").encode())
+
+        
+            
             first_measurement_done = True
             done_received = False
             last_csv_send_time = current_time

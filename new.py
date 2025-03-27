@@ -3,7 +3,6 @@ import numpy as np
 import time
 import serial
 
-
 # Serial Setup
 try:
     ser = serial.Serial("COM6", 115200, timeout=0.1)
@@ -92,8 +91,8 @@ CALIBRATION_DURATION = 5.0  # 캘리브레이션 시간 (초)
 calibration_start_time = time.time()
 calibrated = False
 
-TARGET_ANGLE = 80.0  # 목표 각도 (°)
-TOLERANCE = 10.0     # 허용 오차 (°)
+TARGET_ANGLE = 150.0  # 목표 각도 (°)
+TOLERANCE = 25.0     # 허용 오차 (°)
 
 # 캘리브레이션 동안, 각 가로선과 외형 윤곽선의 교차점을 누적 (왼쪽, 오른쪽 따로)
 calibration_intersections_left = [[] for _ in range(5)]
@@ -224,19 +223,22 @@ while True:
                 fixed_pt = fixed_intersections_left[idx]
                 blob_pt = associated_blobs_left[idx]
                 if fixed_pt is None or blob_pt is None:
-                    continue
-                x_diff_px = abs(blob_pt[0] - fixed_pt[0])
-                control_angle = int(x_diff_px * (30.0 / frame_width) * 60)
-                if TARGET_ANGLE - TOLERANCE <= control_angle <= TARGET_ANGLE + TOLERANCE:
-                    cmd = "STOP"
-                    error = 0
-                elif control_angle < TARGET_ANGLE - TOLERANCE:
-                    cmd = "REV"
-                    error = int(TARGET_ANGLE - control_angle)
+                    # 교점이 없으면 해당 모터는 STOP 명령 전송
+                    cmd_left = "STOP"
+                    error_left = 0
                 else:
-                    cmd = "FWD"
-                    error = int(control_angle - TARGET_ANGLE)
-                csv_command = f"L{idx+1},{cmd},{error}"
+                    x_diff_px = abs(blob_pt[0] - fixed_pt[0])
+                    control_angle = int(x_diff_px * (30.0 / frame_width) * 60)
+                    if TARGET_ANGLE - TOLERANCE <= control_angle <= TARGET_ANGLE + TOLERANCE:
+                        cmd_left = "STOP"
+                        error_left = 0
+                    elif control_angle < TARGET_ANGLE - TOLERANCE:
+                        cmd_left = "REV"
+                        error_left = int(TARGET_ANGLE - control_angle)
+                    else:
+                        cmd_left = "FWD"
+                        error_left = int(control_angle - TARGET_ANGLE)
+                csv_command = f"L{idx+1},{cmd_left},{error_left}"
                 print(csv_command)
                 if ser is not None:
                     ser.write((csv_command + "\n").encode())
@@ -245,22 +247,34 @@ while True:
                 fixed_pt = fixed_intersections_right[idx]
                 blob_pt = associated_blobs_right[idx]
                 if fixed_pt is None or blob_pt is None:
-                    continue
-                x_diff_px = abs(blob_pt[0] - fixed_pt[0])
-                control_angle = int(x_diff_px * (30.0 / frame_width) * 60)
-                if TARGET_ANGLE - TOLERANCE <= control_angle <= TARGET_ANGLE + TOLERANCE:
-                    cmd = "STOP"
-                    error = 0
-                elif control_angle < TARGET_ANGLE - TOLERANCE:
-                    cmd = "REV"
-                    error = int(TARGET_ANGLE - control_angle)
+                    cmd_right = "STOP"
+                    error_right = 0
                 else:
-                    cmd = "FWD"
-                    error = int(control_angle - TARGET_ANGLE)
-                csv_command = f"R{idx+1},{cmd},{error}"
+                    x_diff_px = abs(blob_pt[0] - fixed_pt[0])
+                    control_angle = int(x_diff_px * (30.0 / frame_width) * 60)
+                    if TARGET_ANGLE - TOLERANCE <= control_angle <= TARGET_ANGLE + TOLERANCE:
+                        cmd_right = "STOP"
+                        error_right = 0
+                    elif control_angle < TARGET_ANGLE - TOLERANCE:
+                        cmd_right = "REV"
+                        error_right = int(TARGET_ANGLE - control_angle)
+                    else:
+                        cmd_right = "FWD"
+                        error_right = int(control_angle - TARGET_ANGLE)
+                csv_command = f"R{idx+1},{cmd_right},{error_right}"
                 print(csv_command)
                 if ser is not None:
                     ser.write((csv_command + "\n").encode())
+
+            # 모든 모터 명령이 STOP 인 경우, "down" 후 5초 대기 후 "up" 명령 전송
+            if all(cmd == "STOP" for cmd in [cmd_left, cmd_right]):
+                if ser is not None:
+                    ser.write("down\n".encode())
+                    print("down to arduino")
+                time.sleep(5)
+                if ser is not None:
+                    ser.write("up\n".encode())
+            
             first_measurement_done = True
             done_received = False
             last_csv_send_time = current_time

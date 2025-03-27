@@ -3,7 +3,6 @@ import numpy as np
 import time
 import serial
 
-
 # Serial Setup
 try:
     ser = serial.Serial("COM6", 115200, timeout=0.1)
@@ -109,6 +108,12 @@ last_csv_send_time = 0
 done_received = False
 first_measurement_done = False
 
+# 새로운 플래그
+detected = False  # 외형선이 처음으로 인식되었을 때 활성화되는 플래그
+
+# 모터 제어 명령 상태를 저장하는 변수
+all_motors_stop = True
+
 cap = cv2.VideoCapture(2)
 
 while True:
@@ -131,6 +136,13 @@ while True:
     outer_contour = detect_outer_object_contour(frame)
     if outer_contour is not None:
         cv2.drawContours(frame_display, [outer_contour], -1, (255, 0, 0), 2)
+
+        # 외형선이 처음으로 인식되면, 시리얼로 "up" 명령 전송 후 1초 대기
+        if not detected:
+            detected = True
+            if ser is not None:
+                ser.write("up\n".encode())  # 시리얼로 "up" 명령 전송
+            time.sleep(10)  # 10초 대기 후 캘리브레이션 시작
 
     # 5개의 가로선 계산 (항상 화면에 표시)
     horizontal_lines = []
@@ -226,41 +238,47 @@ while True:
                 if fixed_pt is None or blob_pt is None:
                     continue
                 x_diff_px = abs(blob_pt[0] - fixed_pt[0])
-                control_angle = int(x_diff_px * (30.0 / frame_width) * 60)
+                control_angle = int(x_diff_px * (23.0 / frame_width) * 60)
                 if TARGET_ANGLE - TOLERANCE <= control_angle <= TARGET_ANGLE + TOLERANCE:
-                    cmd = "STOP"
-                    error = 0
+                    cmd_left = "STOP"
                 elif control_angle < TARGET_ANGLE - TOLERANCE:
-                    cmd = "REV"
-                    error = int(TARGET_ANGLE - control_angle)
+                    cmd_left = "REV"
                 else:
-                    cmd = "FWD"
-                    error = int(control_angle - TARGET_ANGLE)
-                csv_command = f"L{idx+1},{cmd},{error}"
-                print(csv_command)
-                if ser is not None:
-                    ser.write((csv_command + "\n").encode())
-            # 오른쪽 고정 교점에 대한 제어
-            for idx in range(5):
+                    cmd_left = "FWD"
+
+                # 오른쪽 모터 제어
                 fixed_pt = fixed_intersections_right[idx]
                 blob_pt = associated_blobs_right[idx]
                 if fixed_pt is None or blob_pt is None:
                     continue
                 x_diff_px = abs(blob_pt[0] - fixed_pt[0])
-                control_angle = int(x_diff_px * (30.0 / frame_width) * 60)
+                control_angle = int(x_diff_px * (23.0 / frame_width) * 60)
                 if TARGET_ANGLE - TOLERANCE <= control_angle <= TARGET_ANGLE + TOLERANCE:
-                    cmd = "STOP"
-                    error = 0
+                    cmd_right = "STOP"
                 elif control_angle < TARGET_ANGLE - TOLERANCE:
-                    cmd = "REV"
-                    error = int(TARGET_ANGLE - control_angle)
+                    cmd_right = "REV"
                 else:
-                    cmd = "FWD"
-                    error = int(control_angle - TARGET_ANGLE)
-                csv_command = f"R{idx+1},{cmd},{error}"
-                print(csv_command)
+                    cmd_right = "FWD"
+
+                # 모든 모터가 "stop"이면 down 명령어 전송
+                if cmd_left == "STOP" and cmd_right == "STOP":
+                    all_motors_stop = True
+                else:
+                    all_motors_stop = False
+
+                # 시리얼 명령 전송
                 if ser is not None:
-                    ser.write((csv_command + "\n").encode())
+                    ser.write((f"L{idx+1},{cmd_left}\n").encode())
+                    ser.write((f"R{idx+1},{cmd_right}\n").encode())
+
+            # 모터 제어 명령이 모두 "stop"일 때
+            if all_motors_stop:
+                if ser is not None:
+                    ser.write("down\n".encode())  # down 명령어 전송
+                time.sleep(5)  # 5초 대기 후
+                if ser is not None:
+                    ser.write("up\n".encode())  # 5초 후 up 명령어 전송
+
             first_measurement_done = True
             done_received = False
             last_csv_send_time = current_time
@@ -288,6 +306,7 @@ while True:
     if key == ord('q'):
         if ser is not None:
             ser.write("finish\n".encode())
+            ser.write("down\n".encode())
         break
 
 cap.release()
